@@ -3,7 +3,7 @@ import re
 import instaloader
 import requests
 from dotenv import load_dotenv
-from flask import Flask, request
+# from flask import Flask, request
 import telebot
 from telebot import types
 from pytube import YouTube
@@ -12,10 +12,10 @@ from PIL import Image
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("RAILWAY_WEBHOOK_URL")
+# WEBHOOK_URL = os.getenv("RAILWAY_WEBHOOK_URL")
 
 bot = telebot.TeleBot(TOKEN)
-app = Flask(__name__)
+# app = Flask(__name__)
 
 if not os.path.exists("downloads"):
     os.makedirs("downloads")
@@ -109,6 +109,8 @@ def download_instagram_post(message):
         bot.reply_to(message, f"⚠️ خطا:\n{e}")
 
 # ───── یوتیوب ─────
+APIFY_TOKEN = os.getenv("APIFY_API_TOKEN")
+
 def fix_youtube_url(url):
     if "youtube.com/shorts/" in url:
         return f"https://youtube.com/watch?v={url.split('shorts/')[-1].split('?')[0]}"
@@ -116,49 +118,61 @@ def fix_youtube_url(url):
 
 def download_youtube_video(message):
     chat_id = message.chat.id
-    url = fix_youtube_url(message.text.strip())
+    original_url = message.text.strip()
+    url = fix_youtube_url(original_url)
+
+    bot.send_message(chat_id, "⏳ در حال پردازش لینک توسط Apify...")
+
+    # مرحله ۱: ساخت درخواست به Apify
+    api_url = f"https://api.apify.com/v2/acts/bytepulselabs~youtube-video-downloader/run-sync-get-dataset-items?token={APIFY_TOKEN}"
+    payload = {
+        "urls": [{"url": url}],
+        "proxy": {
+            "useApifyProxy": True,
+            "apifyProxyGroups": ["RESIDENTIAL"]
+        }
+    }
 
     try:
-        bot.send_message(chat_id, "⏳ در حال دریافت لینک از ytmate...")
-        session = requests.Session()
-        res = session.post("https://ytmate.ltd/api/ajaxSearch/index", data={"q": url, "vt": "home"})
-        res_json = res.json()
-        html = res_json.get("result", "")
-        k_id = re.search(r'k__id\s*=\s*\"(.+?)\"', html).group(1)
-        title_match = re.search(r"<b>Title:</b> (.+?)<br/>", html)
-        title = title_match.group(1) if title_match else "ویدیو"
+        res = requests.post(api_url, json=payload)
+        items = res.json()
 
-        res2 = session.post("https://ytmate.ltd/api/ajaxConvert/convert", data={
-            "type": "youtube",
-            "_id": k_id,
-            "v_id": url.split("v=")[-1],
-            "ftype": "mp4",
-            "fquality": "360"
-        })
-        final_html = res2.json().get("result", "")
-        match = re.search(r'href="(https://[^"]+)"', final_html)
-        if not match:
+        if not items or not isinstance(items, list):
+            raise Exception("داده‌ای دریافت نشد.")
+
+        item = items[0]
+        title = item.get("title", "ویدیو")
+        video_url = item.get("videoUrl")
+
+        if not video_url:
             raise Exception("لینک نهایی پیدا نشد.")
-        final_link = match.group(1)
-        bot.send_message(chat_id, f"🎬 <b>{title}</b>\n🔗 <a href='{final_link}'>دانلود</a>",
-                        parse_mode="HTML", disable_web_page_preview=True)
+
+        bot.send_message(
+            chat_id,
+            f"🎬 <b>{title}</b>\n🔗 <a href='{video_url}'>دانلود</a>",
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+
     except Exception as e:
         bot.send_message(chat_id, f"❌ خطا:\n`{e}`", parse_mode="Markdown")
 
-# ───── Webhook Flask ─────
-@app.route("/", methods=["GET"])
-def home():
-    return "ربات آنلاین است", 200
+# # ───── Webhook Flask ─────
+# @app.route("/", methods=["GET"])
+# def home():
+#     return "ربات آنلاین است", 200
 
-@app.route(f"/{TOKEN}", methods=["POST"])
-def receive_update():
-    json_data = request.get_data().decode("utf-8")
-    update = telebot.types.Update.de_json(json_data)
-    bot.process_new_updates([update])
-    return "OK", 200
+# @app.route(f"/{TOKEN}", methods=["POST"])
+# def receive_update():
+#     json_data = request.get_data().decode("utf-8")
+#     update = telebot.types.Update.de_json(json_data)
+#     bot.process_new_updates([update])
+#     return "OK", 200
 
 # ───── اجرای Webhook ─────
 if __name__ == "__main__":
-    bot.remove_webhook()
-    bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    bot.delete_webhook()
+    bot.infinity_polling()
+    # bot.remove_webhook()
+    # bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
+    # app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
