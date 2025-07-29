@@ -1,5 +1,7 @@
 import os
 import re
+import io
+import time
 import instaloader
 import requests
 from dotenv import load_dotenv
@@ -8,6 +10,8 @@ import telebot
 from telebot import types
 from pytube import YouTube
 from PIL import Image
+
+
 
 load_dotenv()
 
@@ -109,6 +113,8 @@ def download_instagram_post(message):
         bot.reply_to(message, f"⚠️ خطا:\n{e}")
 
 # ───── یوتیوب ─────
+
+
 APIFY_TOKEN = os.getenv("APIFY_API_TOKEN")
 
 def fix_youtube_url(url):
@@ -121,9 +127,8 @@ def download_youtube_video(message):
     original_url = message.text.strip()
     url = fix_youtube_url(original_url)
 
-    bot.send_message(chat_id, "⏳ در حال پردازش لینک توسط Apify...")
+    status_msg = bot.send_message(chat_id, "⏳ در حال دریافت و دانلود ویدیو از Apify...")
 
-    # مرحله ۱: ساخت درخواست به Apify
     api_url = f"https://api.apify.com/v2/acts/bytepulselabs~youtube-video-downloader/run-sync-get-dataset-items?token={APIFY_TOKEN}"
     payload = {
         "urls": [{"url": url}],
@@ -147,12 +152,48 @@ def download_youtube_video(message):
         if not video_url:
             raise Exception("لینک نهایی پیدا نشد.")
 
-        bot.send_message(
-            chat_id,
-            f"🎬 <b>{title}</b>\n🔗 <a href='{video_url}'>دانلود</a>",
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
+        response = requests.get(video_url, stream=True)
+        if response.status_code != 200:
+            raise Exception("دانلود فایل با شکست مواجه شد.")
+
+        file_size_bytes = response.headers.get('Content-Length')
+        file_size_bytes = int(file_size_bytes) if file_size_bytes else None
+        max_size_bytes = 50 * 1024 * 1024
+
+        if file_size_bytes and file_size_bytes > max_size_bytes:
+            bot.send_message(chat_id, f"⚠️ حجم فایل بیش از ۵۰MB هست ({round(file_size_bytes / 1024 / 1024, 2)}MB)\nارسال مستقیم ممکن نیست. لینک دانلود:\n{video_url}")
+            return
+
+        video_stream = io.BytesIO()
+        downloaded = 0
+        chunk_size = 1024 * 64
+        last_update = 0
+
+        for chunk in response.iter_content(chunk_size=chunk_size):
+            if chunk:
+                video_stream.write(chunk)
+                downloaded += len(chunk)
+
+                if file_size_bytes:
+                    progress = int(downloaded * 100 / file_size_bytes)
+                    if time.time() - last_update > 1.5:
+                        bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id,
+                                              text=f"📦 در حال دانلود: {progress}%")
+                        last_update = time.time()
+
+        bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id,
+                              text="✅ دانلود کامل شد. در حال ارسال ویدیو...")
+
+        video_stream.seek(0)
+        video_stream.name = "video.mp4"
+
+        try:
+            bot.send_video(chat_id, video_stream, caption=f"🎬 <b>{title}</b>", parse_mode="HTML")
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ ارسال فایل به تلگرام شکست خورد:\n`{e}`", parse_mode="Markdown")
+        finally:
+            video_stream.close()
+            del video_stream
 
     except Exception as e:
         bot.send_message(chat_id, f"❌ خطا:\n`{e}`", parse_mode="Markdown")
