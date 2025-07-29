@@ -114,89 +114,50 @@ def download_instagram_post(message):
 
 # ───── یوتیوب ─────
 
-
-APIFY_TOKEN = os.getenv("APIFY_API_TOKEN")
-
-def fix_youtube_url(url):
-    if "youtube.com/shorts/" in url:
-        return f"https://youtube.com/watch?v={url.split('shorts/')[-1].split('?')[0]}"
-    return url
+MAX_SIZE_MB = 50
+CHUNK_SIZE = 1024 * 64  # 64KB
 
 def download_youtube_video(message):
     chat_id = message.chat.id
     original_url = message.text.strip()
-    url = fix_youtube_url(original_url)
-
-    status_msg = bot.send_message(chat_id, "⏳ در حال دریافت و دانلود ویدیو از Apify...")
-
-    api_url = f"https://api.apify.com/v2/acts/bytepulselabs~youtube-video-downloader/run-sync-get-dataset-items?token={APIFY_TOKEN}"
-    payload = {
-        "urls": [{"url": url}],
-        "proxy": {
-            "useApifyProxy": True,
-            "apifyProxyGroups": ["RESIDENTIAL"]
-        }
-    }
-
+    api_base = "https://your-api.up.railway.app"
+    
     try:
-        res = requests.post(api_url, json=payload)
-        items = res.json()
+        # ارسال درخواست به API برای گرفتن لینک دانلود
+        info_url = f"{api_base}/download?url={original_url}"
+        res = requests.get(info_url)
 
-        if not items or not isinstance(items, list):
-            raise Exception("داده‌ای دریافت نشد.")
+        if res.status_code != 200 or "download_url" not in res.json():
+            raise Exception(res.json().get("error", "خطا در API"))
 
-        item = items[0]
-        title = item.get("title", "ویدیو")
-        video_url = item.get("videoUrl")
+        data = res.json()
+        direct_url = data["download_url"]
+        title = data["title"]
+        size_mb = data.get("filesize_mb", 0)
 
-        if not video_url:
-            raise Exception("لینک نهایی پیدا نشد.")
-
-        response = requests.get(video_url, stream=True)
-        if response.status_code != 200:
-            raise Exception("دانلود فایل با شکست مواجه شد.")
-
-        file_size_bytes = response.headers.get('Content-Length')
-        file_size_bytes = int(file_size_bytes) if file_size_bytes else None
-        max_size_bytes = 50 * 1024 * 1024
-
-        if file_size_bytes and file_size_bytes > max_size_bytes:
-            bot.send_message(chat_id, f"⚠️ حجم فایل بیش از ۵۰MB هست ({round(file_size_bytes / 1024 / 1024, 2)}MB)\nارسال مستقیم ممکن نیست. لینک دانلود:\n{video_url}")
+        if size_mb > MAX_SIZE_MB:
+            bot.send_message(chat_id,
+                f"⚠️ حجم فایل بیشتر از {MAX_SIZE_MB}MB هست ({size_mb}MB)\nلینک دانلود:\n{direct_url}")
             return
 
-        video_stream = io.BytesIO()
-        downloaded = 0
-        chunk_size = 1024 * 64
-        last_update = 0
+        status_msg = bot.send_message(chat_id, "📦 در حال دانلود و ارسال ویدیو...")
 
-        for chunk in response.iter_content(chunk_size=chunk_size):
+        # دانلود فایل و ارسال در تلگرام
+        video_stream = io.BytesIO()
+        video_stream.name = "video.mp4"
+        res_file = requests.get(direct_url, stream=True)
+
+        for chunk in res_file.iter_content(chunk_size=CHUNK_SIZE):
             if chunk:
                 video_stream.write(chunk)
-                downloaded += len(chunk)
-
-                if file_size_bytes:
-                    progress = int(downloaded * 100 / file_size_bytes)
-                    if time.time() - last_update > 1.5:
-                        bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id,
-                                              text=f"📦 در حال دانلود: {progress}%")
-                        last_update = time.time()
-
-        bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id,
-                              text="✅ دانلود کامل شد. در حال ارسال ویدیو...")
 
         video_stream.seek(0)
-        video_stream.name = "video.mp4"
-
-        try:
-            bot.send_video(chat_id, video_stream, caption=f"🎬 <b>{title}</b>", parse_mode="HTML")
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ ارسال فایل به تلگرام شکست خورد:\n`{e}`", parse_mode="Markdown")
-        finally:
-            video_stream.close()
-            del video_stream
+        bot.send_video(chat_id, video_stream, caption=f"🎬 <b>{title}</b>", parse_mode="HTML")
+        video_stream.close()
+        del video_stream
 
     except Exception as e:
-        bot.send_message(chat_id, f"❌ خطا:\n`{e}`", parse_mode="Markdown")
+        bot.send_message(chat_id, f"❌ خطا در دریافت لینک یا دانلود:\n`{e}`", parse_mode="Markdown")
 
 # # ───── Webhook Flask ─────
 # @app.route("/", methods=["GET"])
